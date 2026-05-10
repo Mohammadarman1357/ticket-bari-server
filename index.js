@@ -146,8 +146,8 @@ async function run() {
         })
 
         // get admin from db --> admin profile
-        app.get('/users/vendors', async (req, res) => {
-            const query = { role: 'vendor' };
+        app.get('/users/admins', async (req, res) => {
+            const query = { role: 'admin' };
             const result = await usersCollection.find(query).toArray();
             res.send(result);
         })
