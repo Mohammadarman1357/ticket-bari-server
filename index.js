@@ -5,7 +5,23 @@ require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const port = process.env.PORT || 3000
+// generate tracking id
+const crypto = require('crypto');
 
+function generateTrackingId() {
+    const prefix = "TCKT"; // your brand prefix
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+    const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random
+
+    return `${prefix}-${date}-${random}`;
+}
+// test
+console.log(generateTrackingId());
+
+
+// middleware
+app.use(express.json());
+app.use(cors());
 
 // mongodb
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@gampi.pfydvdc.mongodb.net/?appName=Gampi`;
@@ -20,10 +36,6 @@ const client = new MongoClient(uri, {
 });
 
 
-// middleware
-app.use(express.json());
-app.use(cors());
-
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
@@ -32,6 +44,44 @@ async function run() {
         // create database
         const db = client.db('ticket_bari_db');
         const usersCollection = db.collection('users');
+        const ticketsCollection = db.collection('tickets');
+        const trackingsCollection = db.collection('trackings');
+
+        // middleware admin before allowing admin activity
+        // must be used after verifyFBToken middlware
+
+        // verify admin
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            if (!user || user.role !== 'admin') {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            next();
+        }
+        // verify vendor
+        const verifyVendor = async (req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email };
+            const user = await usersCollection.findOne(query);
+            if (!user || user.role !== 'vendor') {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            next();
+        }
+
+        // tracking log
+        const logTracking = async (trackingId, status) => {
+            const log = {
+                trackingId,
+                status,
+                details: status.split('_').join(' '),
+                createdAt: new Date()
+            }
+            const result = await trackingsCollection.insertOne(log);
+            return result;
+        }
 
         // users related apis
         // get users
@@ -56,10 +106,10 @@ async function run() {
         })
 
         // get users by id
-        app.get('/users/:id', async (req, res) => {
+        // app.get('/users/:id', async (req, res) => {
 
+        // })
 
-        })
 
         // get users with role by email --> useRole
         app.get('/users/:email/role', async (req, res) => {
@@ -70,6 +120,37 @@ async function run() {
             res.send({ role: user?.role || 'user' });
         })
 
+        // get single user by email in profile
+        app.get('/users/:email/myProfile', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email };
+
+            const result = await usersCollection.findOne(query);
+
+            res.send(result);
+        })
+
+
+         // get all user from user --> user profile in dashboard
+        app.get('/users/role/user', async (req, res) => {
+            const query = { role: 'user' };
+            const result = await usersCollection.find(query).toArray();
+            res.send(result);
+        })
+
+        // get vendors from db --> vendor profile
+        app.get('/users/vendors', async (req, res) => {
+            const query = { role: 'vendor' };
+            const result = await usersCollection.find(query).toArray();
+            res.send(result);
+        })
+
+        // get admin from db --> admin profile
+        app.get('/users/vendors', async (req, res) => {
+            const query = { role: 'vendor' };
+            const result = await usersCollection.find(query).toArray();
+            res.send(result);
+        })
 
         // user create
         app.post('/users', async (req, res) => {
@@ -104,6 +185,89 @@ async function run() {
             const result = await usersCollection.updateOne(query, updateDoc);
             res.send(result);
         })
+
+        // tickets related apis
+
+        // get tickets -->vendor my added tickets
+        app.get('/tickets', async (req, res) => {
+            const query = {};
+            const { email, verificationStatus } = req.query;    // exact kono kichu pete cai like email
+
+            // parcels?email='' &
+            if (email) {
+                query.vendorEmail = email;  // sender er email diye sodo matro tar info gulo dekar jonne
+
+            }
+
+            if (verificationStatus) {
+                query.verificationStatus = verificationStatus;
+            }
+
+            const options = { sort: { createAt: -1 } }
+
+            const cursor = ticketsCollection.find(query, options);
+            const result = await cursor.toArray();
+            res.send(result);
+        })
+
+        // get single tickets --> vendor update tickets
+        app.get('/tickets/single/:ticketId', async (req, res) => {
+            const ticketId = req.params.ticketId;
+            const query = { _id: new ObjectId(ticketId) };
+            const result = await ticketsCollection.findOne(query);
+            res.send(result);
+        })
+
+        // create tickets --> vendor add tickets
+        app.post('/tickets', async (req, res) => {
+            const ticket = req.body;    // req body te jeigulo ace seigulo nibe 
+            const trackingId = generateTrackingId();
+            // ticket created time
+            ticket.createAt = new Date();
+            ticket.trackingId = trackingId;
+
+            logTracking(trackingId, 'pending');
+
+            const result = await ticketsCollection.insertOne(ticket); // ticket insert korbe
+            res.send(result);   // result ta send kore dibe
+        })
+
+        // update tickets --> vendor update ticket
+        app.patch('/tickets/:ticketId', async (req, res) => {
+            const ticketId = req.params.ticketId;
+            const updatedData = req.body;
+            const filter = { _id: new ObjectId(ticketId) };
+
+            const updatedDoc = {
+                $set: {
+                    ticketTitle: updatedData.ticketTitle,
+                    pricePerUnit: updatedData.pricePerUnit,
+                    regionFrom: updatedData.regionFrom,
+                    regionTo: updatedData.regionTo,
+                    transportType: updatedData.transportType,
+                    districtFrom: updatedData.districtFrom,
+                    districtTo: updatedData.districtTo,
+                    perks: updatedData.perks,
+                    quantity: updatedData.ticketQuantity,
+                    totalCost: updatedData.cost,
+                    departureTime: updatedData.departureTime,
+                    status: 'pending'
+                },
+            };
+
+            const result = await ticketsCollection.updateOne(filter, updatedDoc);
+            res.send(result);
+        });
+
+        // delete ticket --> vendor - my added ticket 
+        app.delete('/tickets/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await ticketsCollection.deleteOne(query);
+            res.send(result);
+        });
+
+
 
         // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
