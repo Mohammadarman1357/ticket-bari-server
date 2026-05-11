@@ -222,24 +222,34 @@ async function run() {
 
         // tickets related apis
 
-        // get tickets -->vendor my added tickets
+        // get tickets --> vendor my added tickets,admin tickets, home advertisement,
         app.get('/tickets', async (req, res) => {
             const query = {};
-            const { email, status } = req.query;    // exact kono kichu pete cai like email
+            const { email, status, isAdvertised } = req.query;    // exact kono kichu pete cai like email
 
             // parcels?email='' &
             if (email) {
                 query.vendorEmail = email;  // sender er email diye sodo matro tar info gulo dekar jonne
-
             }
-
+            // verification status check
             if (status) {
                 query.status = status;
+            }
+            // isAdvertised = true ? check
+            if (isAdvertised) {
+                query.isAdvertised = true;
             }
 
             const options = { sort: { createAt: -1 } }
 
             const cursor = ticketsCollection.find(query, options);
+
+            // limit 6 for advertisement
+            if (isAdvertised) {
+                const result = await cursor.limit(6).toArray();
+                return res.send(result);
+            }
+
             const result = await cursor.toArray();
             res.send(result);
         })
@@ -290,18 +300,23 @@ async function run() {
             const updatedData = req.body;
             const filter = { _id: new ObjectId(ticketId) };
 
+            const { pricePerUnit, quantity } = updatedData;
+            const price = parseFloat(pricePerUnit) || 0;
+            const qty = parseInt(quantity) || 0;
+            const calcTicketPrice = price * qty;
+
             const updatedDoc = {
                 $set: {
                     ticketTitle: updatedData.ticketTitle,
-                    pricePerUnit: updatedData.pricePerUnit,
+                    pricePerUnit: price,
                     regionFrom: updatedData.regionFrom,
                     regionTo: updatedData.regionTo,
                     transportType: updatedData.transportType,
                     districtFrom: updatedData.districtFrom,
                     districtTo: updatedData.districtTo,
                     perks: updatedData.perks,
-                    quantity: updatedData.ticketQuantity,
-                    totalCost: updatedData.cost,
+                    quantity: qty,
+                    totalCost: calcTicketPrice,
                     departureTime: updatedData.departureTime,
                     status: 'pending'
                 },
@@ -329,6 +344,35 @@ async function run() {
             const result = await ticketsCollection.updateOne(filter, updateDoc);
             res.send(result);
         });
+
+
+        // update advertise --> advertise section in homepage
+        app.patch('/tickets/advertise/:id', async (req, res) => {
+            const id = req.params.id;
+            const { isAdvertised } = req.body;
+
+            if (isAdvertised === true) {
+                const advertisedCount = await ticketsCollection.countDocuments({ isAdvertised: true });
+
+                if (advertisedCount >= 6) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "Limit exceeded! You can only advertise up to 6 tickets."
+                    });
+                }
+            }
+
+            const filter = { _id: new ObjectId(id) };
+            const updatedDoc = {
+                $set: { isAdvertised: isAdvertised }
+            };
+
+            const result = await ticketsCollection.updateOne(filter, updatedDoc);
+            res.send({ success: true, result });
+        });
+
+
+
 
         // delete ticket --> vendor - my added ticket 
         app.delete('/tickets/:id', async (req, res) => {
