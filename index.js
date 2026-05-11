@@ -8,6 +8,18 @@ const port = process.env.PORT || 3000
 // generate tracking id
 const crypto = require('crypto');
 
+// firebase 
+const admin = require("firebase-admin");
+const { format } = require('path');
+
+// firebase
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+
 function generateTrackingId() {
     const prefix = "TCKT"; // your brand prefix
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
@@ -22,6 +34,29 @@ console.log(generateTrackingId());
 // middleware
 app.use(express.json());
 app.use(cors());
+
+const verifyFBToken = async (req, res, next) => {
+    // console.log('headers in the middleware', req.headers.authorization);
+    const token = req.headers.authorization;
+
+    if (!token) {
+        return res.status(401).send({ message: 'unauthorized access' });
+    }
+
+    try {
+        const idToken = token.split(' ')[1];    // must white space dite hobe... 
+        const decoded = await admin.auth().verifyIdToken(idToken);     // must add
+        console.log('decoded in the token : ', decoded);
+        req.decoded_email = decoded.email;
+
+        next();
+    }
+    catch (err) {
+        return res.status(401).send({ message: 'unauthorized access' });
+    }
+
+
+}
 
 // mongodb
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@gampi.pfydvdc.mongodb.net/?appName=Gampi`;
@@ -131,7 +166,7 @@ async function run() {
         })
 
 
-         // get all user from user --> user profile in dashboard
+        // get all user from user --> user profile in dashboard
         app.get('/users/role/user', async (req, res) => {
             const query = { role: 'user' };
             const result = await usersCollection.find(query).toArray();
@@ -191,7 +226,7 @@ async function run() {
         // get tickets -->vendor my added tickets
         app.get('/tickets', async (req, res) => {
             const query = {};
-            const { email, verificationStatus } = req.query;    // exact kono kichu pete cai like email
+            const { email, status } = req.query;    // exact kono kichu pete cai like email
 
             // parcels?email='' &
             if (email) {
@@ -199,8 +234,8 @@ async function run() {
 
             }
 
-            if (verificationStatus) {
-                query.verificationStatus = verificationStatus;
+            if (status) {
+                query.status = status;
             }
 
             const options = { sort: { createAt: -1 } }
@@ -232,6 +267,24 @@ async function run() {
             res.send(result);   // result ta send kore dibe
         })
 
+        // TODO : rename tis to the specific like /parcels/:id/assign
+        // patch parcel -- assign rider
+        app.patch('/tickets/:id/status', async (req, res) => {
+            const { status } = req.body;
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+
+            const updatedDoc = {
+                $set: {
+                    status: status
+                }
+            }
+
+            const result = await ticketsCollection.updateOne(query, updatedDoc);
+            res.send(result);
+
+        })
+
         // update tickets --> vendor update ticket
         app.patch('/tickets/:ticketId', async (req, res) => {
             const ticketId = req.params.ticketId;
@@ -256,6 +309,25 @@ async function run() {
             };
 
             const result = await ticketsCollection.updateOne(filter, updatedDoc);
+            res.send(result);
+        });
+
+        // update advertise --> admin advertise ticket
+        app.patch('/tickets/:id/advertise', async (req, res) => {
+            const id = req.params.id;
+            const { isAdvertised } = req.body;
+
+            if (isAdvertised) {
+                const count = await ticketsCollection.countDocuments({ isAdvertised: true });
+                if (count >= 6) {
+                    return res.send({ message: 'Limit reached', modifiedCount: 0 });
+                }
+            }
+            const filter = { _id: new ObjectId(id) };
+            const updateDoc = {
+                $set: { isAdvertised: isAdvertised }
+            };
+            const result = await ticketsCollection.updateOne(filter, updateDoc);
             res.send(result);
         });
 
