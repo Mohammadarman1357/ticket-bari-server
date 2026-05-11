@@ -16,6 +16,7 @@
     "firebase-admin": "^13.9.0",
     "index.js": "^0.0.3",
     "mongodb": "^7.2.0",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "stripe": "^22.1.1"
   }
 }

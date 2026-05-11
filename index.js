@@ -3,8 +3,11 @@ const cors = require('cors');
 const app = express()
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-
 const port = process.env.PORT || 3000
+
+// payment stripe
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
+
 // generate tracking id
 const crypto = require('crypto');
 
@@ -79,7 +82,10 @@ async function run() {
         const db = client.db('ticket_bari_db');
         const usersCollection = db.collection('users');
         const ticketsCollection = db.collection('tickets');
+        const bookingsCollection = db.collection('bookings');
+        const paymentCollection = db.collection('payments');
         const trackingsCollection = db.collection('trackings');
+
 
         // middleware admin before allowing admin activity
         // must be used after verifyFBToken middlware
@@ -254,13 +260,25 @@ async function run() {
             res.send(result);
         })
 
-        // get single tickets --> vendor update tickets
+        // get single tickets --> vendor update tickets , ticket details
         app.get('/tickets/single/:ticketId', async (req, res) => {
             const ticketId = req.params.ticketId;
             const query = { _id: new ObjectId(ticketId) };
             const result = await ticketsCollection.findOne(query);
             res.send(result);
         })
+
+        // get ticket --> latest ticket section
+        app.get('/latest-tickets', async (req, res) => {
+            const query = { status: 'approved' };
+
+            const result = await ticketsCollection
+                .find(query)
+                .sort({ createAt: -1 })
+                .limit(8)
+                .toArray();
+            res.send(result);
+        });
 
         // create tickets --> vendor add tickets
         app.post('/tickets', async (req, res) => {
@@ -372,6 +390,182 @@ async function run() {
         });
 
 
+        // bookings related apis
+        // get bookings --> my booked tickets
+        app.get('/bookings', async (req, res) => {
+            const query = {};
+            const { email, status } = req.query;    // exact kono kichu pete cai like email
+
+            // parcels?email='' &
+            if (email) {
+                query.userEmail = email;  // sender er email diye sodo matro tar info gulo dekar jonne
+            }
+            // verification status check
+            if (status) {
+                query.status = status;
+            }
+
+            const options = { sort: { createAt: -1 } }
+
+            const cursor = bookingsCollection.find(query, options);
+
+            const result = await cursor.toArray();
+            res.send(result);
+        })
+
+
+        // get data by id wise          // je data ta pay korte cacci setar data dorkar
+        app.get('/bookings/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+
+            const result = await bookingsCollection.findOne(query);
+            res.send(result);
+
+        })
+
+
+        // insert booking
+        app.post('/bookings', async (req, res) => {
+            const bookingData = req.body;
+            const trackingId = generateTrackingId();
+
+            // ticket created time
+            bookingData.createAt = new Date();
+            bookingData.trackingId = trackingId;
+
+            logTracking(trackingId, 'pending');
+
+            const result = await bookingsCollection.insertOne(bookingData);
+
+            await ticketsCollection.updateOne(
+                { _id: new ObjectId(bookingData.ticketId) },
+                { $inc: { quantity: -bookingData.quantity } }
+            );
+
+            res.send(result);
+        });
+
+
+        // payment related apis
+        app.post('/payment-checkout-session', async (req, res) => {
+            // booking info
+
+            const bookingInfo = req.body;
+            const amount = Math.round(parseInt(bookingInfo.totalCost) * 100);
+            const session = await stripe.checkout.sessions.create({
+                line_items: [
+                    {
+                        price_data: {
+                            currency: 'USD',
+                            unit_amount: amount,
+                            product_data: {
+                                name: `Please Pay : ${bookingInfo.totalCost}`,
+                            }
+                        },
+                        quantity: 1,
+                    },
+                ],
+                mode: 'payment',
+                customer_email: bookingInfo.userEmail,
+                metadata: {
+                    bookingId: bookingInfo.bookingId,
+                    trackingId: bookingInfo.trackingId
+                },
+                success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+            })
+
+            res.send({ url: session.url })
+        })
+        // update or paid
+        app.patch('/payment-success', async (req, res) => {
+
+            const sessionId = req.query.session_id;
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+            // console.log('session retrieve', session)
+
+            const transactionId = session.payment_intent;
+            const query = { transactionId: transactionId };
+
+            const paymentExist = await paymentCollection.findOne(query);
+            console.log(paymentExist);
+
+            if (paymentExist) {
+                return res.send({
+                    message: 'already exists',
+                    transactionId,
+                    trackingId: paymentExist.trackingId
+                })
+            }
+
+            // use the previous tracking id not generate tracking id here
+            // const trackingId = generateTrackingId();
+            // take tracking from sessionid
+
+            // use the previous tracking id created during the parcel create which was set to the session metadata during session creation
+            const trackingId = session.metadata.trackingId;
+
+            if (session.payment_status === 'paid') {
+                const bookingId = session.metadata.bookingId;
+                const query = { _id: new ObjectId(bookingId) };   // search kora id ta ke
+                const update = {
+                    $set: {
+                        paymentStatus: 'paid',
+                        status: 'paid'
+                    }
+                }
+
+                const result = await bookingsCollection.updateOne(query, update);
+
+                const payment = {
+                    amount: session.amount_total / 100,
+                    currency: session.currency,
+                    customer_email: session.customer_email,
+                    bookingId: session.metadata.bookingId,
+                    transactionId: session.payment_intent,
+                    paymentStatus: session.payment_status,
+                    trackingId: trackingId,
+                    paidAt: new Date(),
+                }
+
+                    const resultPayment = await paymentCollection.insertOne(payment);
+
+                    logTracking(trackingId, 'paid');
+
+                    return res.send({
+                        success: true,
+                        trackingId: trackingId,
+                        transactionId: session.payment_intent,
+                        bookingInfo: resultPayment
+                    })
+                
+            }
+
+            return res.send({ success: false })
+        })
+
+        // payment history related apis
+        app.get('/payments', verifyFBToken, async (req, res) => {
+            const email = req.query.email;
+            const query = {};
+
+            // console.log('headers', req.headers);
+
+            if (email) {
+                query.customer_email = email
+
+                // check email address. onno jon er email access korte dibe na.
+                if (email !== req.decoded_email) {
+                    return res.status(403).send({ message: 'forbidden access' })
+                }
+            }
+            const cursor = paymentCollection.find(query).sort({ paidAt: -1 });
+            const result = await cursor.toArray();
+            res.send(result);
+
+        })
 
 
         // delete ticket --> vendor - my added ticket 
@@ -379,6 +573,25 @@ async function run() {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
             const result = await ticketsCollection.deleteOne(query);
+            res.send(result);
+        });
+
+        // delete booking --> my booked ticket 
+        app.delete('/bookings/:id', async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+
+            const booking = await bookingsCollection.findOne(query);
+            const updateDoc = {
+                $inc: { quantity: booking.quantity }
+            };
+
+            await ticketsCollection.updateOne(
+                { _id: new ObjectId(booking.ticketId) },
+                updateDoc
+            );
+
+            const result = await bookingsCollection.deleteOne(query);
             res.send(result);
         });
 
