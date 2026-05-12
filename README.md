@@ -3,9 +3,9 @@ TicketBari is a comprehensive MERN stack application designed to streamline the 
 
 ## 🔗 Live Links & Repositories
 
-*	Live Site: [Insert Your Live Link Here]
-*	Client Side Repo: [Insert Client Repo Link]
-*	Server Side Repo: [Insert Server Repo Link]
+*	Live Site: https://ticket-bari-arman.web.app
+*	Client Side Repo: https://github.com/Mohammadarman1357/ticket-bari-client
+*	Server Side Repo: https://github.com/Mohammadarman1357/ticket-bari-server
 ________________________________________
 
 ## 📖 Project Overview
