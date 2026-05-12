@@ -87,6 +87,7 @@ async function run() {
         const trackingsCollection = db.collection('trackings');
 
 
+
         // middleware admin before allowing admin activity
         // must be used after verifyFBToken middlware
 
@@ -259,6 +260,61 @@ async function run() {
             const result = await cursor.toArray();
             res.send(result);
         })
+
+        // all tickets
+        app.get('/all-tickets', async (req, res) => {
+
+            const {
+                vendorEmail,
+                status,
+                limit = 9,
+                skip = 0,
+                sort = "createAt",
+                order = "desc",
+                transportType = "",
+                districtFrom,
+                districtTo
+            } = req.query;
+
+            const query = {};
+
+            // verification status check
+            if (status) {
+                query.status = status;
+            }
+
+            // Search & Advanced Filters
+            if (districtFrom) {
+                query.districtFrom = { $regex: districtFrom, $options: "i" };
+            }
+            if (districtTo) {
+                query.districtTo = { $regex: districtTo, $options: "i" };
+            }
+            if (transportType && transportType !== "all") {
+                query.transportType = transportType;
+            }
+
+            // Sort Logic
+            const sortOption = {};
+            sortOption[sort] = order === "asc" ? 1 : -1;
+
+            // All Tickets with Pagination
+            const tickets = await ticketsCollection
+                .find(query)
+                .sort(sortOption)
+                .skip(Number(skip))
+                .limit(Number(limit))
+                .toArray();
+
+
+            const cursor = ticketsCollection.find(query);
+            const result = await cursor.toArray();  // ticket db teke ticket k array akare newar jonno
+
+            const count = await ticketsCollection.countDocuments(query);
+
+            res.send({ tickets, result, total: count });
+
+        });
 
         // get single tickets --> vendor update tickets , ticket details
         app.get('/tickets/single/:ticketId', async (req, res) => {
@@ -446,6 +502,21 @@ async function run() {
             res.send(result);
         });
 
+        // update status --> vendor booking request
+        app.patch('/bookings/:id', verifyFBToken, verifyVendor, async (req, res) => {
+            const status = req.body.status;
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const updatedDoc = {
+                $set: {
+                    status: status,
+                }
+            }
+
+            const result = await bookingsCollection.updateOne(query, updatedDoc);
+            res.send(result);
+        })
+
 
         // payment related apis
         app.post('/payment-checkout-session', async (req, res) => {
@@ -470,7 +541,8 @@ async function run() {
                 customer_email: bookingInfo.userEmail,
                 metadata: {
                     bookingId: bookingInfo.bookingId,
-                    trackingId: bookingInfo.trackingId
+                    trackingId: bookingInfo.trackingId,
+                    ticketTitle: bookingInfo.ticketTitle
                 },
                 success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
                 cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
@@ -490,6 +562,7 @@ async function run() {
             const query = { transactionId: transactionId };
 
             const paymentExist = await paymentCollection.findOne(query);
+
             console.log(paymentExist);
 
             if (paymentExist) {
@@ -524,25 +597,26 @@ async function run() {
                     currency: session.currency,
                     customer_email: session.customer_email,
                     bookingId: session.metadata.bookingId,
+                    ticketTitle: session.metadata.ticketTitle,
                     transactionId: session.payment_intent,
                     paymentStatus: session.payment_status,
                     trackingId: trackingId,
                     paidAt: new Date(),
                 }
 
-                    const resultPayment = await paymentCollection.insertOne(payment);
+                const resultPayment = await paymentCollection.insertOne(payment);
 
-                    logTracking(trackingId, 'paid');
+                logTracking(trackingId, 'paid');
 
-                    return res.send({
-                        success: true,
-                        trackingId: trackingId,
-                        transactionId: session.payment_intent,
-                        bookingInfo: resultPayment
-                    })
-                
+                return res.send({
+                    success: true,
+                    trackingId: trackingId,
+                    transactionId: session.payment_intent,
+                    bookingInfo: resultPayment
+                })
+
             }
-
+            
             return res.send({ success: false })
         })
 
@@ -566,6 +640,31 @@ async function run() {
             res.send(result);
 
         })
+
+        // 
+        // Admin Statistics API
+        app.get('/vendor/booking-stats', verifyFBToken, verifyVendor, async (req, res) => {
+
+            const paymentStats = await paymentCollection.aggregate([
+                {
+                    $group: {
+                        _id: null,
+                        totalRevenue: { $sum: "$amount" },
+                        totalTicketsSold: { $sum: 1 }
+                    }
+                }
+            ]).toArray();
+
+            const totalTicketsAdded = await ticketsCollection.countDocuments();
+
+            const stats = {
+                totalRevenue: paymentStats.length > 0 ? paymentStats[0].totalRevenue : 0,
+                totalTicketsSold: paymentStats.length > 0 ? paymentStats[0].totalTicketsSold : 0,
+                totalTicketsAdded: totalTicketsAdded
+            };
+
+            res.send(stats);
+        });
 
 
         // delete ticket --> vendor - my added ticket 
